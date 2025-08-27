@@ -10,6 +10,7 @@
 // @license      MIT
 // @run-at       document-idle
 // @downloadURL  https://github.com/SulthanTriesToCode/twitch-channelpoints-claim-and-helper/raw/refs/heads/main/twitch-channelpoints-claim-and-helper.user.js
+// @updateURL    https://github.com/SulthanTriesToCode/twitch-channelpoints-claim-and-helper/raw/refs/heads/main/twitch-channelpoints-claim-and-helper.meta.js
 // ==/UserScript==
 
 (function () {
