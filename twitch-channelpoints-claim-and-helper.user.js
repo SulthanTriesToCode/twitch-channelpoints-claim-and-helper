@@ -16,10 +16,17 @@
 (function () {
   'use strict';
 
-  let enabled = true;
-  let didAutoMute = false;
-  let lastUrl = location.href;
-  let lastVideo = null;
+  const CONFIG = {
+    checkInterval: 5000,
+    videoCheckInterval: 1000,
+  };
+
+  let state = {
+    enabled: true,
+    didAutoMute: false,
+    lastUrl: location.href,
+    lastVideo: null,
+  };
 
   const log = (...args) =>
     console.log('%c[Domopremo Twitch Helper]', 'color:#7fffd4;font-weight:bold;', ...args);
@@ -53,7 +60,7 @@
 
   // Auto-Claim Channel Points
   function claimPoints() {
-    if (!enabled) return;
+    if (!state.enabled) return;
     const btn = document.querySelector('button[aria-label="Claim Bonus"]');
     if (btn) {
       btn.click();
@@ -63,7 +70,7 @@
 
   // Auto-Mute Stream ONCE (per load or navigation)
   function muteStream() {
-    if (!enabled || didAutoMute) return;
+    if (!state.enabled || state.didAutoMute) return;
 
     const muteBtn = document.querySelector('[data-a-target="player-mute-unmute-button"]');
     const video = document.querySelector('video');
@@ -86,7 +93,7 @@
       acted = true;
     }
 
-    didAutoMute = true;
+    state.didAutoMute = true;
     if (acted) log('🔇 Auto-muted stream (once)');
     else log('🔇 Stream already muted; will not auto-mute again until navigation/new video');
   }
@@ -152,64 +159,65 @@
   }
 
   // Set Lowest Stream Quality — excludes "Auto"/"Audio Only", then closes menu
-  function setLowestQuality() {
-    if (!enabled) return;
+  async function setLowestQuality() {
+    if (!state.enabled) return;
     const gear = getSettingsButton();
     if (!gear) return;
 
     gear.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(350);
 
-    setTimeout(() => {
-      const qualityMenuBtn = [...document.querySelectorAll('[role="menuitem"]')]
+    let qualityMenuBtn = [...document.querySelectorAll('[role="menuitem"]')]
+      .find(el => ((el.textContent || '').toLowerCase().includes('quality')));
+
+    if (!qualityMenuBtn) {
+      await sleep(2000); // retry later if UI not ready
+      qualityMenuBtn = [...document.querySelectorAll('[role="menuitem"]')]
         .find(el => ((el.textContent || '').toLowerCase().includes('quality')));
+      if (!qualityMenuBtn) return;
+    }
 
-      if (!qualityMenuBtn) {
-        setTimeout(setLowestQuality, 2000); // retry later if UI not ready
-        return;
+    qualityMenuBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(350);
+
+    const options = [...document.querySelectorAll('[role="menuitemradio"]')];
+    if (options.length === 0) return;
+
+    const candidates = options
+      .map(el => ({ el, text: (el.textContent || '').trim().toLowerCase() }))
+      .filter(({ text }) => !text.includes('auto') && !text.includes('audio'))
+      .map(({ el, text }) => {
+        const m = text.match(/(\d{3,4})\s*p/); // 160p, 360p, 720p60 -> 720
+        return { el, res: m ? parseInt(m[1], 10) : Number.POSITIVE_INFINITY };
+      })
+      .sort((a, b) => a.res - b.res);
+
+    let clicked = false;
+    if (candidates.length && Number.isFinite(candidates[0].res)) {
+      candidates[0].el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      clicked = true;
+      log('📉 Set to lowest non-auto quality');
+    } else {
+      const numeric = options.filter(
+        el => /(\d{3,4})\s*p/i.test(el.textContent || '') && !/auto|audio/i.test((el.textContent || '').toLowerCase())
+      );
+      const target = numeric.at(-1) || options.find(el => !/auto/i.test((el.textContent || '').toLowerCase()));
+      if (target) {
+        target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        clicked = true;
       }
+      log('📉 Set to lowest quality (fallback)');
+    }
 
-      qualityMenuBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-      setTimeout(() => {
-        const options = [...document.querySelectorAll('[role="menuitemradio"]')];
-        if (options.length === 0) return;
-
-        const candidates = options
-          .map(el => ({ el, text: (el.textContent || '').trim().toLowerCase() }))
-          .filter(({ text }) => !text.includes('auto') && !text.includes('audio'))
-          .map(({ el, text }) => {
-            const m = text.match(/(\d{3,4})\s*p/); // 160p, 360p, 720p60 -> 720
-            return { el, res: m ? parseInt(m[1], 10) : Number.POSITIVE_INFINITY };
-          })
-          .sort((a, b) => a.res - b.res);
-
-        let clicked = false;
-        if (candidates.length && Number.isFinite(candidates[0].res)) {
-          candidates[0].el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-          clicked = true;
-          log('📉 Set to lowest non-auto quality');
-        } else {
-          const numeric = options.filter(
-            el => /(\d{3,4})\s*p/i.test(el.textContent || '') && !/auto|audio/i.test((el.textContent || '').toLowerCase())
-          );
-          const target = numeric.at(-1) || options.find(el => !/auto/i.test((el.textContent || '').toLowerCase()));
-          if (target) {
-            target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-            clicked = true;
-          }
-          log('📉 Set to lowest quality (fallback)');
-        }
-
-        if (clicked) {
-          setTimeout(() => { closeSettingsMenuRobust(); }, 180);
-        }
-      }, 350);
-    }, 350);
+    if (clicked) {
+      await sleep(180);
+      await closeSettingsMenuRobust();
+    }
   }
 
   // Detect "Reload Player" button and click it every 10s
   function detectFrozenStream() {
-    if (!enabled) return;
+    if (!state.enabled) return;
     const labelCandidates = document.querySelectorAll('[data-a-target="tw-core-button-label-text"]');
     for (const lbl of labelCandidates) {
       const text = (lbl.textContent || '').trim();
@@ -221,6 +229,18 @@
           break;
         }
       }
+    }
+  }
+
+  // Check for video element changes (replaces MutationObserver)
+  function checkVideoChange() {
+    const currentVideo = document.querySelector('video');
+    if (currentVideo && currentVideo !== state.lastVideo) {
+      state.lastVideo = currentVideo;
+      state.didAutoMute = false;
+      log('🎬 New video element detected; running init actions');
+      muteStream();
+      setTimeout(() => setLowestQuality(), 3000);
     }
   }
 
@@ -242,67 +262,37 @@
     window.addEventListener('popstate', fire);
 
     setInterval(() => {
-      if (location.href !== lastUrl) fire();
+      if (location.href !== state.lastUrl) fire();
     }, 1000);
 
     window.addEventListener('locationchange', async () => {
-      if (location.href === lastUrl) return;
-      lastUrl = location.href;
-      log('🔄 SPA navigation detected:', lastUrl);
+      if (location.href === state.lastUrl) return;
+      state.lastUrl = location.href;
+      log('🔄 SPA navigation detected:', state.lastUrl);
 
-      didAutoMute = false;
+      state.didAutoMute = false;
 
       const v = await waitForSelector('video', { timeout: 15000 });
       if (v) {
-        lastVideo = v;
-        setTimeout(() => muteStream(), 0);
+        state.lastVideo = v;
+        muteStream();
         setTimeout(() => setLowestQuality(), 3000);
       }
     });
   }
 
-  // Watch for new <video> elements (player rebuilds)
-  function installVideoObserver() {
-    lastVideo = document.querySelector('video') || null;
-
-    const mo = new MutationObserver(muts => {
-      claimPoints();
-      for (const m of muts) {
-        for (const n of m.addedNodes) {
-          if (n.nodeType !== 1) continue;
-          const v = n.matches?.('video') ? n : n.querySelector?.('video');
-          if (v && v !== lastVideo) {
-            lastVideo = v;
-            didAutoMute = false;
-            log('🎬 New video element detected; running init actions');
-            setTimeout(() => muteStream(), 0);
-            setTimeout(() => setLowestQuality(), 3000);
-          }
-        }
-      }
-    });
-    mo.observe(document.body, { childList: true, subtree: true });
-  }
-
-  // Bonus button observer
-  const bonusObserver = new MutationObserver(() => {
-    claimPoints();
-  });
-  bonusObserver.observe(document.body, { childList: true, subtree: true });
-
-  // Main loop
-  function mainLoop() {
-    claimPoints();
-    muteStream(); // only acts once due to didAutoMute
-  }
-
-  // Timers
-  setInterval(mainLoop, 15000);
-  setInterval(detectFrozenStream, 10000);
-
   // Initialize
   installSpaNavigationHooks();
-  installVideoObserver();
+
+  // Main polling loops
+  setInterval(() => {
+    claimPoints();
+    detectFrozenStream();
+  }, CONFIG.checkInterval);
+
+  setInterval(() => {
+    checkVideoChange();
+  }, CONFIG.videoCheckInterval);
 
   setTimeout(() => {
     muteStream();
