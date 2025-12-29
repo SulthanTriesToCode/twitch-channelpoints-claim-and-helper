@@ -1,20 +1,65 @@
 // ==UserScript==
-// @name         Twitch Auto Claim & Stream Bonus Helper
+// @name         Twitch Auto Claim & Stream Bonus Helper (Unmuted)
 // @namespace    TwitchScripts
-// @version      2.7
-// @description  Auto-claims channel points, set the quality to low, mutes the stream, and reloads the stream if an error occurs.
+// @version      2.8
+// @description  Auto-claims channel points, set the quality to low, and reloads the stream if an error occurs.
 // @author       Domopremo (Original) SulthanTriesToCode (Fork)
 // @match        https://www.twitch.tv/*
 // @icon         https://www.twitch.tv/favicon.ico
 // @grant        none
 // @license      MIT
-// @run-at       document-idle
+// @run-at       document-start
 // @downloadURL  https://github.com/SulthanTriesToCode/twitch-channelpoints-claim-and-helper/raw/refs/heads/main/twitch-channelpoints-claim-and-helper.user.js
 // @updateURL    https://github.com/SulthanTriesToCode/twitch-channelpoints-claim-and-helper/raw/refs/heads/main/twitch-channelpoints-claim-and-helper.meta.js
 // ==/UserScript==
 
 (function () {
   'use strict';
+
+  // --- Feature: Trick site into thinking it's never hidden ---
+  Object.defineProperty(document, 'visibilityState', { value: 'visible', writable: false });
+  Object.defineProperty(document, 'webkitVisibilityState', { value: 'visible', writable: false });
+  document.hasFocus = function () { return true; };
+  const initialHidden = document.hidden;
+  let didInitialPlay = false;
+  let lastVideoPlaying = false;
+
+  // visibilitychange events are captured and stopped
+  document.addEventListener('visibilitychange', function (e) {
+    if (document.hidden === false && initialHidden === true && didInitialPlay === false) {
+      // Allow propagation to prevent black screen when a stream was opened in a new tab
+    } else {
+      e.stopImmediatePropagation();
+    }
+    if (document.hidden) {
+      didInitialPlay = true;
+    }
+
+    // Try to play the video on Chrome
+    if (typeof chrome !== 'undefined') {
+      if (document.hidden === true) {
+        const videos = document.getElementsByTagName('video');
+        if (videos.length > 0) {
+          lastVideoPlaying = !videos[0].paused && !videos[0].ended;
+        } else {
+          lastVideoPlaying = false;
+        }
+      } else {
+        playVideo();
+      }
+    }
+  }, true);
+
+  function playVideo() {
+    const videos = document.getElementsByTagName('video');
+    if (videos.length > 0) {
+      if ((didInitialPlay === false || lastVideoPlaying === true) && !videos[0].ended) {
+        videos[0].play();
+        didInitialPlay = true;
+      }
+    }
+  }
+  // -----------------------------------------------------------
 
   const CONFIG = {
     checkInterval: 5000,
@@ -23,7 +68,6 @@
 
   let state = {
     enabled: true,
-    didAutoMute: false,
     lastUrl: location.href,
     lastVideo: null,
   };
@@ -66,36 +110,6 @@
       btn.click();
       log('🎁 Claimed channel points');
     }
-  }
-
-  // Auto-Mute Stream ONCE (per load or navigation)
-  function muteStream() {
-    if (!state.enabled || state.didAutoMute) return;
-
-    const muteBtn = document.querySelector('[data-a-target="player-mute-unmute-button"]');
-    const video = document.querySelector('video');
-    if (!muteBtn && !video) return;
-
-    let acted = false;
-
-    const label = muteBtn?.getAttribute('aria-label')?.toLowerCase() || '';
-    const showsUnmute = /\bunmute\b/.test(label); // "Unmute (m)" => already muted
-    const showsMute = /\bmute\b/.test(label) && !showsUnmute; // "Mute (m)" => currently unmuted
-
-    if (video && !video.muted) {
-      video.muted = true;
-      video.volume = 0;
-      acted = true;
-    }
-
-    if (muteBtn && showsMute) {
-      muteBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      acted = true;
-    }
-
-    state.didAutoMute = true;
-    if (acted) log('🔇 Auto-muted stream (once)');
-    else log('🔇 Stream already muted; will not auto-mute again until navigation/new video');
   }
 
   // Robustly close the settings/quality menus:
@@ -237,9 +251,7 @@
     const currentVideo = document.querySelector('video');
     if (currentVideo && currentVideo !== state.lastVideo) {
       state.lastVideo = currentVideo;
-      state.didAutoMute = false;
       log('🎬 New video element detected; running init actions');
-      muteStream();
       setTimeout(() => setLowestQuality(), 3000);
     }
   }
@@ -270,12 +282,9 @@
       state.lastUrl = location.href;
       log('🔄 SPA navigation detected:', state.lastUrl);
 
-      state.didAutoMute = false;
-
       const v = await waitForSelector('video', { timeout: 15000 });
       if (v) {
         state.lastVideo = v;
-        muteStream();
         setTimeout(() => setLowestQuality(), 3000);
       }
     });
@@ -295,7 +304,6 @@
   }, CONFIG.videoCheckInterval);
 
   setTimeout(() => {
-    muteStream();
     setLowestQuality();
   }, 5000);
 })();
