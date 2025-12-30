@@ -83,14 +83,7 @@
     getComputedStyle(el).visibility !== 'hidden' &&
     getComputedStyle(el).display !== 'none';
 
-  // Prefer the visible gear button (handles nested/duplicated elements)
-  function getSettingsButton() {
-    const btns = [...document.querySelectorAll('[data-a-target="player-settings-button"]')]
-      .filter(isVisible);
-    if (btns.length === 0) return null;
-    // Heuristic: use the last visible instance (often the interactive one)
-    return btns.at(-1);
-  }
+
 
   async function waitForSelector(selector, { root = document, timeout = 15000, interval = 100 } = {}) {
     const end = Date.now() + timeout;
@@ -112,120 +105,70 @@
     }
   }
 
-  // Robustly close the settings/quality menus:
-  // - If in Quality submenu: click "Back to Video Player Settings", then "Close"
-  // - Else: click "Close"
-  // - Fallbacks: ESC, toggle gear button, click player area
-  async function closeSettingsMenuRobust() {
-    const visibleMenus = () => [...document.querySelectorAll('[role="menu"]')].filter(isVisible);
-
-    const clickItemByTextInMenus = (rx) => {
-      const menus = visibleMenus();
-      for (let i = menus.length - 1; i >= 0; i--) {
-        const menu = menus[i];
-        const all = menu.querySelectorAll('*');
-        for (const el of all) {
-          const text = el.textContent?.trim() || '';
-          if (rx.test(text)) {
-            const row = el.closest('[role="menuitem"]') ||
-                        el.closest('.Layout-sc-1xcs6mc-0.dCYttJ') ||
-                        el.closest('button,[role="button"]') ||
-                        el;
-            row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-            return true;
-          }
-        }
-      }
-      return false;
-    };
-
-    // Try direct close (if at root)
-    if (clickItemByTextInMenus(/^\s*close\s*$/i)) {
-      await sleep(120);
-      if (visibleMenus().length === 0) return;
-    }
-
-    // If in a submenu: go back first, then close
-    if (clickItemByTextInMenus(/back to video player settings/i)) {
-      await sleep(140);
-      clickItemByTextInMenus(/^\s*close\s*$/i);
-      await sleep(120);
-      if (visibleMenus().length === 0) return;
-    }
-
-    // ESC fallback
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
-    document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
-    await sleep(100);
-    if (visibleMenus().length === 0) return;
-
-    // Toggle the gear (settings) as a fallback — use robust resolver
-    const gear = getSettingsButton();
-    gear?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await sleep(150);
-    if (visibleMenus().length === 0) return;
-
-    // Click the player area to defocus/close
-    const player = document.querySelector('[data-a-target="video-player"]') ||
-                   document.querySelector('[data-a-player="true"]') ||
-                   document.querySelector('video')?.parentElement;
-    player?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-  }
-
-  // Set Lowest Stream Quality — excludes "Auto"/"Audio Only", then closes menu
+  // Adapted from change-video-quality.js
   async function setLowestQuality() {
     if (!state.enabled) return;
-    const gear = getSettingsButton();
-    if (!gear) return;
 
-    gear.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await sleep(350);
+    log('📉 Attempting to set lowest quality...');
 
-    let qualityMenuBtn = [...document.querySelectorAll('[role="menuitem"]')]
-      .find(el => ((el.textContent || '').toLowerCase().includes('quality')));
+    // 1. Click Settings Button
+    const settingsButton = await waitForSelector('[data-a-target="player-settings-button"]', { timeout: 5000 });
+    if (!settingsButton) {
+        log('❌ Settings button not found');
+        return;
+    }
+    settingsButton.click();
 
+    // 2. Click Quality Menu Item
+    const qualityMenuBtn = await waitForSelector('[data-a-target="player-settings-menu-item-quality"]', { timeout: 5000 });
     if (!qualityMenuBtn) {
-      await sleep(2000); // retry later if UI not ready
-      qualityMenuBtn = [...document.querySelectorAll('[role="menuitem"]')]
-        .find(el => ((el.textContent || '').toLowerCase().includes('quality')));
-      if (!qualityMenuBtn) return;
+        log('❌ Quality menu item not found');
+        return;
+    }
+    qualityMenuBtn.click();
+
+    // 3. Wait for radio options
+    const radioContainer = await waitForSelector('[data-a-target="tw-radio"]', { timeout: 5000 });
+    if (!radioContainer) {
+        log('❌ Radio options not found');
+        return;
     }
 
-    qualityMenuBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await sleep(350);
+    // 4. Select Quality
+    const inputs = document.querySelectorAll('input[type="radio"]');
+    if (inputs.length === 0) return;
 
-    const options = [...document.querySelectorAll('[role="menuitemradio"]')];
-    if (options.length === 0) return;
+    const PreferedQuality = "160p"; 
+    let qualityFound = false;
+    let targetInput = null;
 
-    const candidates = options
-      .map(el => ({ el, text: (el.textContent || '').trim().toLowerCase() }))
-      .filter(({ text }) => !text.includes('auto') && !text.includes('audio'))
-      .map(({ el, text }) => {
-        const m = text.match(/(\d{3,4})\s*p/); // 160p, 360p, 720p60 -> 720
-        return { el, res: m ? parseInt(m[1], 10) : Number.POSITIVE_INFINITY };
-      })
-      .sort((a, b) => a.res - b.res);
+    // Check if preferred quality exists
+    for (let i = 0; i < inputs.length; i++) {
+        const label = inputs[i].parentNode.textContent;
+        if (label && label.includes(PreferedQuality)) {
+            qualityFound = true;
+            targetInput = inputs[i];
+            break;
+        }
+    }
 
-    let clicked = false;
-    if (candidates.length && Number.isFinite(candidates[0].res)) {
-      candidates[0].el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      clicked = true;
-      log('📉 Set to lowest non-auto quality');
+    if (qualityFound && targetInput) {
+        targetInput.click();
+        log('✅ Set to preferred quality: ' + PreferedQuality);
     } else {
-      const numeric = options.filter(
-        el => /(\d{3,4})\s*p/i.test(el.textContent || '') && !/auto|audio/i.test((el.textContent || '').toLowerCase())
-      );
-      const target = numeric.at(-1) || options.find(el => !/auto/i.test((el.textContent || '').toLowerCase()));
-      if (target) {
-        target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-        clicked = true;
-      }
-      log('📉 Set to lowest quality (fallback)');
+        // Fallback to lowest (last option)
+        const lastInput = inputs[inputs.length - 1];
+        if (lastInput) {
+            lastInput.click();
+            const label = lastInput.parentNode.textContent;
+            log('✅ Set to lowest available quality: ' + label);
+        }
     }
 
-    if (clicked) {
-      await sleep(180);
-      await closeSettingsMenuRobust();
+    // 5. Close Settings (Click settings button again)
+    const settingsButtonClose = await waitForSelector('[data-a-target="player-settings-button"]', { timeout: 5000 });
+    if (settingsButtonClose) {
+        settingsButtonClose.click();
     }
   }
 
