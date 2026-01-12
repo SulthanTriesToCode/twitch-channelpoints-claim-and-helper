@@ -172,21 +172,16 @@
     }
   }
 
-  // Detect "Reload Player" button and click it every 10s
+  // Detect "Reload Player" button and click it
   function detectFrozenStream() {
     if (!state.enabled) return;
-    const labelCandidates = document.querySelectorAll('[data-a-target="tw-core-button-label-text"]');
-    for (const lbl of labelCandidates) {
-      const text = (lbl.textContent || '').trim();
-      if (/^click here to reload player$/i.test(text)) {
-        const btn = lbl.closest('button, [role="button"]');
-        if (btn) {
-          btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-          log('🔁 Clicked "Reload Player" button');
-          break;
-        }
+    try {
+      const reloadPlayer = document.querySelector("[data-a-target='player-overlay-content-gate']").children[2].firstChild;
+      if (reloadPlayer && reloadPlayer.firstChild && reloadPlayer.firstChild.children.length === 2) {
+        reloadPlayer.click();
+        log('🔁 Clicked "Reload Player" button');
       }
-    }
+    } catch (err) {}
   }
 
   // Check for video element changes (replaces MutationObserver)
